@@ -1,0 +1,175 @@
+---
+title: "GSE11838"
+author: "Hongying Tao"
+date: "2024-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("DESeq2")
+```
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(DOSE)
+library(ggplot2)
+library(oligo)
+library(affy)
+library(limma)
+library(GEOquery)
+library(GSEABase)
+library(enrichplot)
+library(qvalue)
+library(msigdbr)
+library(DESeq2)
+library(fgsea)
+```
+
+
+# GSE11838
+```{r}
+gset <- getGEO("GSE11838", GSEMatrix = TRUE)[[1]]
+gset
+```
+```{r}
+gpl <- getGEO("GPL6977", destdir = ".")
+
+annot <- Table(gpl)
+head(annot)
+```
+
+```{r}
+ex <- exprs(gset)
+
+selected_samples <- c("GSM299216", "GSM299217", "GSM299218", "GSM299219", "GSM299154", "GSM299155", "GSM299156", "GSM299157")
+
+exprMatrix <- ex[, selected_samples]
+
+exprMatrix <- na.omit(exprMatrix)
+exprMatrix <- round(exprMatrix)
+# head(exprMatrix)
+```
+
+```{r}
+phenotype <- factor(c(rep("treated", 4), rep("control", 4)))
+
+metadata <- data.frame(
+  row.names = colnames(exprMatrix),
+  phenotype = phenotype
+)
+
+dds <- DESeqDataSetFromMatrix(countData = exprMatrix,
+                              colData = metadata,
+                              design = ~ phenotype)
+## Normalization
+dds <- DESeq(dds)
+## Differential Expression Analysis
+res <- results(dds)
+```
+```{r}
+res$ranking_score <- sign(res$log2FoldChange) * (-log10(res$pvalue))
+
+# order by ranking_score
+rankedList <- res[order(res$ranking_score, decreasing = TRUE), ]
+
+head(rankedList)
+```
+```{r}
+res_df <- as.data.frame(res)
+res_df$probeid <- rownames(res_df)
+
+# order by ranking_score
+res_df$ranking_score <- sign(res_df$log2FoldChange) * (-log10(res_df$pvalue))
+rankedList <- res_df[order(res_df$ranking_score, decreasing = TRUE), ]
+
+probe_to_gene <- annot[, c("ID", "ORF")]
+colnames(probe_to_gene) <- c("probeid", "gene")
+
+rankedList <- merge(rankedList, probe_to_gene, by.x = "probeid", by.y = "probeid", all.x = TRUE)
+
+# Delete lines without gene symbols
+rankedList <- rankedList[rankedList$gene != "--" & rankedList$gene != "", ]
+rankedList <- na.omit(rankedList)
+head(rankedList)
+```
+
+```{r}
+# Ensure that the geneList only contains rows with gene symbols
+geneList <- rankedList$ranking_score
+names(geneList) <- rankedList$gene
+
+# Sort by ranking_score value
+geneList <- geneList[order(geneList, decreasing = TRUE)]
+
+head(geneList)
+```
+
+```{r}
+# Plot rankings of the first 50 genes
+# ggplot(data.frame(gene = names(geneList)[1:50], ranks = geneList[1:50]), aes(gene, ranks)) + 
+# 	geom_point() +
+# 	theme_classic() + 
+# 	theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Gene sets
+
+```{r}
+gmt_file <- "c2.cp.kegg_legacy.v2023.2.Hs.symbols.gmt"
+gene_sets <- read.gmt(gmt_file)
+
+head(gene_sets)
+```
+
+## GSEA
+```{r}
+# Make sure geneList has no duplicate genes
+geneList <- geneList[!duplicated(names(geneList))]
+
+# Add tiny random noise to break the juxtaposition
+set.seed(123)
+geneList <- geneList + runif(length(geneList), min = -1e-10, max = 1e-10)
+
+# order geneList
+geneList <- sort(geneList, decreasing = TRUE)
+
+# GSEA
+gsea_results <- GSEA(geneList, TERM2GENE=gene_sets, pvalueCutoff=1)
+
+# Convert the GSEA results to a data.frame
+gsea_df <- as.data.frame(gsea_results)
+
+# Display the DataFrame
+print(head(gsea_df))
+
+```
+
+
+```{r}
+gseaplot(gsea_results, geneSetID = 1)
+#dotplot(gsea_results, showCategory = 11)
+```
+
+```{r}
+sum(gsea_df$pvalue < 0.05)
+sum(gsea_df$p.adjust < 0.05)
+```
+
+
+```{r}
+# Top 5 enriched gene sets (ordered by p-val)
+gsea_orderP_adjust <- gsea_results[order(gsea_results$p.adjust), ]
+
+print(head(gsea_orderP_adjust))
+```
+
